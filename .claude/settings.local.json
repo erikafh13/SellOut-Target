@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-Content 'c:\\\\sellout-dashboard\\\\src\\\\views\\\\Dashboard2.vue' -Raw | Select-Object -Skip 4300 -First 400\")",
+      "Bash(powershell -Command \"[char]92 + '[kat, ki]'\")",
+      "Bash(powershell -Command \"\\(Get-Content 'c:\\\\sellout-dashboard\\\\src\\\\views\\\\Dashboard2.vue' -Raw\\)[498..505] -join ''\")",
+      "Bash(powershell -Command \"[System.IO.File]::ReadAllText\\('c:\\\\sellout-dashboard\\\\src\\\\views\\\\Dashboard2.vue', [System.Text.Encoding]::UTF8\\).Substring\\(14500, 500\\)\")",
+      "Bash(node *)",
+      "Bash(git -C /c/sellout-dashboard log --oneline -5)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(kill %1)",
+      "Bash(curl -s \"http://localhost:5173/src/views/Dashboard.vue\")"
+    ]
+  }
+}
