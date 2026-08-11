@@ -1,115 +1,95 @@
 // utils/brandCleaner.js
+// Normalisasi nama brand dan nama pelanggan.
+// File ini adalah satu-satunya sumber kebenaran untuk kedua fungsi tersebut —
+// calculations.js me-re-export cleanPelanggan supaya import lama tetap jalan.
+
 const BRAND_MAP = {
-  // Trailing spaces
-  'ACER ':'ACER','ANKER ':'ANKER','BRATECK ':'BRATECK','DAHUA ':'DAHUA',
-  'EPSON ':'EPSON','FANTECH ':'FANTECH','GAMEN ':'GAMEN','HIKVISION ':'HIKVISION',
-  'HP ':'HP','INTEL ':'INTEL','KINGSTON ':'KINGSTON','LENOVO ':'LENOVO',
-  'LOGITECH ':'LOGITECH','MSI ':'MSI','NYK NEMESIS ':'NYK NEMESIS',
-  'PANORAMA ':'PANORAMA','PATRIOT ':'PATRIOT','SAMSUNG ':'SAMSUNG',
-  'SONY ':'SONY','UBIQUITI ':'UBIQUITI','UGREEN ':'UGREEN','VENTION ':'VENTION',
-  // Case variants
-  'Anker':'ANKER','Brateck':'BRATECK','DeepCool':'DEEPCOOL','DarkFlash':'DARKFLASH',
-  'Genius':'GENIUS','Gigabyte':'GIGABYTE','Kassen':'KASSEN','Kingston':'KINGSTON',
-  'Lenovo':'LENOVO','Logitech':'LOGITECH','Patriot':'PATRIOT','Ripjaws':'RIPJAWS',
-  'Sony':'SONY','Tecware':'TECWARE','Ugreen':'UGREEN','UGreen':'UGREEN',
-  'Viewsonic':'VIEWSONIC','Xiaomi':'XIAOMI','Asus':'ASUS','Acer':'ACER',
-  // Brand aliases
-  'ANKER':'ANKER','EPSON':'EPSON','GENIUS':'GENIUS','INTEL':'INTEL',
-  'LOGITECH':'LOGITECH','MSI':'MSI','NYK NEMESIS':'NYK NEMESIS','SONY':'SONY',
-  'TPLINK':'TPLINK','TP-LINK':'TPLINK','TPLink':'TPLINK',
-  'UGREEN':'UGREEN','VENTION':'VENTION',
-  'WD':'WD','WD GREEN':'WD',
-  'XIAOMI':'XIAOMI','XIOMI':'XIAOMI',
-  'MERCUCYS':'MERCUSYS',
-  // Other normalizations
-  'ASUSA':'ASUS','RUIJI':'RUIJIE','ONY':'SONY',
-  'MasterLiquid':'COOLER MASTER','MASTERBOX':'COOLER MASTER',
-  'G. Skill Trident':'GSKILL','Soundcore (Anker)':'SOUNDCORE',
-  'SOUNDCORE (ANKER)':'SOUNDCORE','TRIDENT':'TRIDENT','Trindent':'TRIDENT',
-  'SecureBox ':'SECUREBOX','SECUREBOK':'SECUREBOX',
-  'M-TECH':'MTECH',
-  '(blank)':null,'':'null',
+  // Varian huruf besar/kecil
+  ANKER: 'ANKER', BRATECK: 'BRATECK', DEEPCOOL: 'DEEPCOOL', DARKFLASH: 'DARKFLASH',
+  GENIUS: 'GENIUS', GIGABYTE: 'GIGABYTE', KASSEN: 'KASSEN', KINGSTON: 'KINGSTON',
+  LENOVO: 'LENOVO', LOGITECH: 'LOGITECH', PATRIOT: 'PATRIOT', RIPJAWS: 'RIPJAWS',
+  SONY: 'SONY', TECWARE: 'TECWARE', UGREEN: 'UGREEN', VIEWSONIC: 'VIEWSONIC',
+  XIAOMI: 'XIAOMI', ASUS: 'ASUS', ACER: 'ACER',
+
+  // Alias dan salah ketik
+  'TP-LINK': 'TPLINK', TPLINK: 'TPLINK',
+  'WD GREEN': 'WD',
+  XIOMI: 'XIAOMI',
+  MERCUCYS: 'MERCUSYS',
+  ASUSA: 'ASUS',
+  RUIJI: 'RUIJIE',
+  ONY: 'SONY',
+  MASTERLIQUID: 'COOLER MASTER', MASTERBOX: 'COOLER MASTER',
+  'G. SKILL TRIDENT': 'GSKILL',
+  'SOUNDCORE (ANKER)': 'SOUNDCORE',
+  TRINDENT: 'TRIDENT',
+  SECUREBOK: 'SECUREBOX',
+  'M-TECH': 'MTECH',
 }
 
+/**
+ * Normalisasi nama brand ke bentuk kanonik (huruf besar).
+ * Mengembalikan null untuk nilai kosong atau '(blank)'.
+ *
+ * Perbaikan dari versi lama: dulu spasi berlebih dan variasi huruf besar/kecil
+ * ditangani lewat entri terpisah per brand ('ACER ', 'Acer', 'ACER'), sehingga
+ * brand baru selalu lolos dari mapping. Sekarang input dinormalisasi dulu
+ * (trim + uppercase + rapatkan spasi ganda) baru dicocokkan, jadi peta ini
+ * hanya perlu memuat alias yang benar-benar berbeda.
+ */
 export function cleanBrand(raw) {
-  if (!raw) return null
-  const s = String(raw).trim()
-  if (!s || s === '(blank)') return null
-  if (s in BRAND_MAP) {
-    const mapped = BRAND_MAP[s]
-    return mapped === 'null' ? null : mapped
-  }
-  return s.toUpperCase()
+  if (raw == null) return null
+  const s = String(raw).trim().replace(/\s+/g, ' ').toUpperCase()
+  if (!s || s === '(BLANK)') return null
+  return BRAND_MAP[s] ?? s
 }
 
-// ── Mapping Nama Pelanggan → Nama Toko ───────────────────────────────────────
-// Shopee: dipecah per toko berdasarkan nama pelanggan
-// Tokopedia: dipecah per toko berdasarkan nama pelanggan
-// Website/Retail: berdasarkan prefix No. Faktur
-// Sisanya: nama asli pelanggan
+// ── Nama pelanggan → nama toko ───────────────────────────────────────────────
+// Urutan penting: aturan spesifik di atas, aturan umum di bawah.
 
-// Urutan penting — lebih spesifik di atas, lebih umum di bawah
-const SHOPEE_MAP = [
-  // Nama pelanggan (uppercase)  →  Nama toko
-  { match: nama => nama === 'D - SHOPEE',                           toko: 'Shopee SMG'          },
-  { match: nama => nama === 'F - SHOPEE',                           toko: 'Shopee MLG'          },
-  { match: nama => nama === 'SHOPEE - WD',                          toko: 'Shopee WD'           },
-  { match: nama => nama === 'AIRPAY - MONITORZONE',                 toko: 'Shopee Monitor Zone' },
-  { match: nama => nama === 'E - SHOPEE',                           toko: 'Shopee JOG'          },
-  { match: nama => nama === 'AIRPAY INTERNATIONAL INDONESIA',       toko: 'Shopee DB Klik Mall' },
-  { match: nama => nama === 'AIRPAY.ID',                            toko: 'Shopee JKT'          },
-  // Fallback: hanya untuk Airpay yang tidak ter-mapping (Shopee variants
-  // akan fall-through ke nama asli jika tidak ada di atas)
-  { match: nama => nama.includes('AIRPAY'), toko: 'Shopee' },
+const TOKO_MAP = [
+  { match: n => n === 'D - SHOPEE',                     toko: 'Shopee SMG' },
+  { match: n => n === 'F - SHOPEE',                     toko: 'Shopee MLG' },
+  { match: n => n === 'E - SHOPEE',                     toko: 'Shopee JOG' },
+  { match: n => n === 'SHOPEE - WD',                    toko: 'Shopee WD' },
+  { match: n => n === 'AIRPAY - MONITORZONE',           toko: 'Shopee Monitor Zone' },
+  { match: n => n === 'AIRPAY INTERNATIONAL INDONESIA', toko: 'Shopee DB Klik Mall' },
+  { match: n => n === 'AIRPAY.ID',                      toko: 'Shopee JKT' },
+  { match: n => n.includes('AIRPAY'),                   toko: 'Shopee' },
+  { match: n => n === 'TOKOPEDIA',                      toko: 'Tokopedia Indonesia' },
+  { match: n => n === 'TOKOPEDIA.ID',                   toko: 'Tokopedia Jakarta' },
+  { match: n => n.includes('TOKOPEDIA') || n.includes('TOKPED'), toko: 'Tokopedia' },
 ]
 
-const TOKPED_MAP = [
-  { match: nama => nama === 'TOKOPEDIA',    toko: 'Tokopedia Indonesia' },
-  { match: nama => nama === 'TOKOPEDIA.ID', toko: 'Tokopedia Jakarta'   },
-  // Fallback
-  { match: nama => nama.includes('TOKOPEDIA') || nama.includes('TOKPED'), toko: 'Tokopedia' },
-]
+const RETAIL_PREFIXES = ['AO', 'BO', 'DO', 'EO', 'FO', 'HO']
 
+/**
+ * Kelompokkan baris SO ke nama dealer/toko yang dipakai di seluruh dashboard.
+ *
+ * PENTING: fungsi ini adalah kunci pengelompokan dealer di mana-mana —
+ * distribusi target, perhitungan achievement, pivot, dan filter platform.
+ * Semuanya harus memakai fungsi yang sama, kalau tidak target dan realisasi
+ * akan jatuh ke baris yang berbeda.
+ */
 export function cleanPelanggan(row) {
   const rawNama = String(row['Nama Pelanggan'] ?? '').trim()
-  const nama    = rawNama.toUpperCase()
+  const nama = rawNama.toUpperCase()
+
+  for (const entry of TOKO_MAP) {
+    if (entry.match(nama)) return entry.toko
+  }
+
   const noFaktur = String(row['No. Faktur'] ?? '').trim().toUpperCase()
+  if (RETAIL_PREFIXES.some(p => noFaktur.startsWith(p))) return 'WEBSITE / RETAIL'
 
-  // Cek Shopee dulu (lebih spesifik)
-  for (const entry of SHOPEE_MAP) {
-    if (entry.match(nama)) {
-      console.log('[cleanPelanggan]', rawNama, '=> SHOPEE MAP =>', entry.toko)
-      return entry.toko
-    }
-  }
-
-  // Cek Tokopedia
-  for (const entry of TOKPED_MAP) {
-    if (entry.match(nama)) {
-      console.log('[cleanPelanggan]', rawNama, '=> TOKPED MAP =>', entry.toko)
-      return entry.toko
-    }
-  }
-
-  // Website / Retail (berdasarkan prefix No. Faktur)
-  const retailPrefixes = ['AO','BO','DO','EO','FO','HO']
-  if (retailPrefixes.some(p => noFaktur.startsWith(p))) {
-    console.log('[cleanPelanggan]', rawNama, '=> RETAIL')
-    return 'WEBSITE / RETAIL'
-  }
-
-  // Nama asli kalau tidak cocok semua
-  console.log('[cleanPelanggan]', rawNama, '=> NAMA ASLI:', rawNama)
   return rawNama
 }
 
-// Helper: cek apakah pelanggan adalah platform online
+/** Kelompok platform untuk filter di dashboard. */
 export function getPlatformGroup(namaPelanggan) {
   const n = String(namaPelanggan ?? '').toUpperCase()
-  console.log('[getPlatformGroup] input:', namaPelanggan, '=>', n)
-  if (n.startsWith('SHOPEE') || n.includes('SHOPEE')) { console.log('[getPlatformGroup] => Shopee'); return 'Shopee' }
-  if (n.startsWith('TOKOPEDIA') || n.includes('TOKOPEDIA')) { console.log('[getPlatformGroup] => Tokopedia'); return 'Tokopedia' }
-  if (n === 'WEBSITE / RETAIL') { console.log('[getPlatformGroup] => Website/Retail'); return 'Website/Retail' }
-  console.log('[getPlatformGroup] => Offline/Dealer')
+  if (n.includes('SHOPEE')) return 'Shopee'
+  if (n.includes('TOKOPEDIA')) return 'Tokopedia'
+  if (n === 'WEBSITE / RETAIL') return 'Website/Retail'
   return 'Offline/Dealer'
 }
