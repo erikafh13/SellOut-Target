@@ -5,9 +5,18 @@ import { parseRupiah, mapNamaDept, mapCity, BULAN_INDONESIA } from './calculatio
 export function readFileAsBuffer(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload  = e => resolve(e.target.result)
+    reader.onload = e => resolve(e.target.result)
     reader.onerror = () => reject(new Error('Gagal membaca file'))
     reader.readAsArrayBuffer(file)
+  })
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = e => resolve(e.target.result)
+    reader.onerror = () => reject(new Error('Gagal membaca file'))
+    reader.readAsText(file, 'UTF-8')
   })
 }
 
@@ -17,170 +26,189 @@ export function parseExcelOrCsv(buffer, fileName, options = {}) {
   return XLSX.utils.sheet_to_json(ws, { defval: '' })
 }
 
-function readCsvAsRows(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error('Gagal membaca file'))
-    reader.onload = e => {
-      try {
-        const text    = e.target.result
-        const sep     = text.indexOf('\t') !== -1 ? '\t' : ','
-        const rows    = []
-        let pos       = 0
-        const len     = text.length
+/**
+ * Parser CSV/TSV yang menghormati tanda kutip.
+ *
+ * Versi lama memakai split() per baris dan per pemisah, sehingga field
+ * berkutip yang memuat koma atau baris baru — misalnya "PT ABC, Tbk" —
+ * membuat seluruh kolom setelahnya bergeser.
+ */
+function parseDelimited(text) {
+  const sep = text.indexOf('\t') !== -1 && text.indexOf('\t') < text.indexOf('\n')
+    ? '\t' : ','
 
-        let nl = text.indexOf('\n', pos)
-        if (nl === -1) { resolve([]); return }
-        const headers = text.slice(pos, nl).replace(/\r$/, '').split(sep)
-          .map(h => h.replace(/^"|"$/g, '').trim())
-        pos = nl + 1
+  const baris = []
+  let field = ''
+  let record = []
+  let inQuote = false
 
-        while (pos < len) {
-          nl = text.indexOf('\n', pos)
-          if (nl === -1) nl = len
-          const line = text.slice(pos, nl).replace(/\r$/, '')
-          pos = nl + 1
-          if (!line.trim()) continue
-          const vals = line.split(sep)
-          const obj  = {}
-          headers.forEach((h, i) => {
-            obj[h] = (vals[i] ?? '').replace(/^"|"$/g, '').trim()
-          })
-          rows.push(obj)
-        }
-        resolve(rows)
-      } catch(err) {
-        reject(err)
-      }
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+
+    if (inQuote) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ }
+        else inQuote = false
+      } else field += c
+      continue
     }
-    reader.readAsText(file, 'UTF-8')
-  })
+
+    if (c === '"') { inQuote = true }
+    else if (c === sep) { record.push(field); field = '' }
+    else if (c === '\n') { record.push(field); baris.push(record); record = []; field = '' }
+    else if (c !== '\r') { field += c }
+  }
+  if (field !== '' || record.length) { record.push(field); baris.push(record) }
+
+  if (!baris.length) return []
+
+  const headers = baris[0].map(h => h.trim())
+  return baris.slice(1)
+    .filter(r => r.some(v => String(v).trim() !== ''))
+    .map(r => Object.fromEntries(headers.map((h, i) => [h, String(r[i] ?? '').trim()])))
 }
 
-function parseTglFaktur(s) {
+async function bacaBaris(file) {
+  if (file.name.toLowerCase().endsWith('.csv')) {
+    return parseDelimited(await readFileAsText(file))
+  }
+  return parseExcelOrCsv(await readFileAsBuffer(file), file.name)
+}
+
+const BULAN_EN = {
+  JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6,
+  JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12,
+}
+
+/**
+ * Parse tanggal faktur dari Date, serial Excel, atau berbagai format teks.
+ * Format dd/mm/yyyy diperlakukan sebagai hari-bulan-tahun (konvensi Indonesia).
+ */
+function parseTglFaktur(nilai) {
+  if (!nilai && nilai !== 0) return null
+  if (nilai instanceof Date) return isNaN(nilai.getTime()) ? null : nilai
+
+  // Serial date Excel (hari sejak 30-12-1899)
+  if (typeof nilai === 'number' && nilai > 20000 && nilai < 80000) {
+    return new Date(Date.UTC(1899, 11, 30 + nilai))
+  }
+
+  const s = String(nilai).trim()
   if (!s) return null
-  if (s instanceof Date && !isNaN(s.getTime())) {
-    return s
+
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (iso) return new Date(+iso[1], +iso[2] - 1, +iso[3])
+
+  const dmy = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/)
+  if (dmy) return new Date(+dmy[3], +dmy[2] - 1, +dmy[1])
+
+  const teks = s.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/)
+  if (teks) {
+    const bln = BULAN_EN[teks[2].slice(0, 3).toUpperCase()]
+    if (bln) return new Date(+teks[3], bln - 1, +teks[1])
   }
-  const str = String(s).trim()
-  const dIso = new Date(str)
-  if (!isNaN(dIso.getTime()) && str.includes('-') && str.length > 10) {
-    return dIso
-  }
-  const m2 = str.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  if (m2) {
-    const d = new Date(`${m2[1]}-${m2[2]}-${m2[3]}`)
-    if (!isNaN(d)) return d
-  }
-  const m = str.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/)
-  if (m) {
-    const d = new Date(`${m[2]} ${m[1]}, ${m[3]}`)
-    if (!isNaN(d)) return d
-  }
-  const m3 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-  if (m3) {
-    const d = new Date(`${m3[3]}-${m3[2].padStart(2,'0')}-${m3[1].padStart(2,'0')}`)
-    if (!isNaN(d)) return d
-  }
-  return null
+
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
 }
 
+const teks = v => String(v ?? '').trim()
+const angka = v => parseFloat(String(v ?? '0').replace(',', '.')) || 0
+
+/** Baris SO format baru (kolom SKU / Brand / Total / Quantity). */
 export function normalizeSoFormatBaru(row) {
-  const namaAsli = String(row['Nama Pelanggan'] ?? '').trim()
-  if (namaAsli.toUpperCase().includes('SHOPEE') || namaAsli.toUpperCase().includes('AIRPAY')) {
-    console.log('Shopee/Airpay ditemukan:', namaAsli)
-  }
-  
-  const tglRaw = row['Tgl Faktur'] || row['Tanggal'] || '';
-  
-  const dObj = parseTglFaktur(tglRaw);
-  const bulan = dObj ? (BULAN_INDONESIA[dObj.getMonth() + 1] ?? '') : '';
-  const tahun = dObj ? dObj.getFullYear() : 0;
+  const tgl = parseTglFaktur(row['Tgl Faktur'] ?? row['Tanggal'])
+  const bulan = tgl ? BULAN_INDONESIA[tgl.getMonth() + 1] : ''
+  const tahun = tgl ? tgl.getFullYear() : 0
 
-  let tglFakturStandard = String(tglRaw).trim();
-  if (dObj) {
-    const yyyy = dObj.getFullYear();
-    const mm = String(dObj.getMonth() + 1).padStart(2, '0');
-    const dd = String(dObj.getDate()).padStart(2, '0');
-    tglFakturStandard = `${yyyy}-${mm}-${dd}`;
-  }
+  const tglStandard = tgl
+    ? `${tgl.getFullYear()}-${String(tgl.getMonth() + 1).padStart(2, '0')}-${String(tgl.getDate()).padStart(2, '0')}`
+    : teks(row['Tgl Faktur'] ?? row['Tanggal'])
 
-  let totalRaw = String(row['Total'] || row['Jumlah'] || '0').replace(/[^0-9,-]+/g, "");
-  if (totalRaw.includes(',')) totalRaw = totalRaw.split(',')[0];
-  const totalClean = parseFloat(totalRaw) || 0;
+  // Dulu nilai total dipotong di koma pertama, sehingga "1,234,567" terbaca 1.
+  // Sekarang memakai parseRupiah yang sama dengan sisa aplikasi.
+  const total = parseRupiah(row['Total'] ?? row['Jumlah'])
 
-  const mappedDept = mapNamaDept(row)
-  const kota = mapCity(mappedDept)
+  const dept = mapNamaDept(row)
+  const kota = mapCity(dept)
+  const sku = teks(row['SKU'] ?? row['No. Barang'])
+  const brand = teks(row['Brand'] ?? row['BRAND Barang'])
+  const nama = teks(row['Nama Item'] ?? row['Nama Barang'])
+  const qty = angka(row['Quantity'] ?? row['Qty'])
 
   return {
-    'No. Faktur':            String(row['No. Faktur'] ?? '').trim(),
-    'Tgl Faktur':            tglFakturStandard,
+    'No. Faktur':            teks(row['No. Faktur']),
+    'Tgl Faktur':            tglStandard,
     'Bulan':                 bulan,
     'Tahun':                 tahun,
-    'Nama Pelanggan':        String(row['Nama Pelanggan'] ?? '').trim(),
-    'No. Barang':            String((row['SKU'] || row['No. Barang']) ?? '').trim(),
-    'SKU':                   String((row['SKU'] || row['No. Barang']) ?? '').trim(),
-    'BRAND Barang':          String((row['Brand'] || row['BRAND Barang']) ?? '').trim(),
-    'Brand':                 String((row['Brand'] || row['BRAND Barang']) ?? '').trim(),
-    'Kategori':              String(row['Kategori'] ?? '').trim(),
-    'Nama Barang':           String((row['Nama Item'] || row['Nama Barang']) ?? '').trim(),
-    'Nama Item':             String((row['Nama Item'] || row['Nama Barang']) ?? '').trim(),
-    'Qty':                   parseFloat(String(row['Quantity'] || row['Qty'] || '0').replace(',', '.')) || 0,
-    'Quantity':              parseInt(row['Quantity'] || row['Qty'] || 0),
-    'Harga Sat':             row['Harga Sat'] || 0,
-    'Jumlah':                totalClean,
-    'Total':                 totalClean,
-    'Sales':                 String(row['Sales'] ?? '').trim(),
-    'Gudang':                String(row['Gudang'] ?? '').trim(),
-    'Dept.':                 mappedDept,
-    'Nama Dept.':            mappedDept,
-    'Lokasi Toko Pelanggan': String(row['Lokasi Toko Pelanggan'] || row['Lokasi Toko'] || '').trim(),
+    'Nama Pelanggan':        teks(row['Nama Pelanggan']),
+    'No. Barang':            sku,
+    'SKU':                   sku,
+    'BRAND Barang':          brand,
+    'Brand':                 brand,
+    'Kategori':              teks(row['Kategori']),
+    'Nama Barang':           nama,
+    'Nama Item':             nama,
+    'Qty':                   qty,
+    'Quantity':              qty,
+    'Harga Sat':             parseRupiah(row['Harga Sat']),
+    'Jumlah':                total,
+    'Total':                 total,
+    'Sales':                 teks(row['Sales']),
+    'Gudang':                teks(row['Gudang']),
+    'Dept.':                 dept,
+    'Nama Dept.':            dept,
+    'Lokasi Toko Pelanggan': teks(row['Lokasi Toko Pelanggan'] ?? row['Lokasi Toko']),
     'Kota':                  kota,
     'City':                  kota,
     'Kab/Kota':              kota,
-    'Status':                String(row['Status'] ?? '').trim(),
-    // Kolom lokasi dikosongkan — akan diisi lewat mapping distributor
+    'Status':                teks(row['Status']),
     'Alamat':                '',
     'Kec':                   '',
     'Provinsi':              '',
     'Periode':               bulan && tahun ? `${bulan} ${tahun}` : '',
-  };
+  }
 }
 
-function normalizeSoHistorisA(row) {
-  const brand     = String(row['BRAND Barang'] ?? '').trim()
-  const rawPelanggan = String(row['Nama Pelanggan'] ?? '').trim()
-  if (!brand && !rawPelanggan) return null
+/** Baris SO format lama (kolom BRAND Barang / Kuantitas / Keterangan Barang). */
+function normalizeSoHistoris(row) {
+  const brand = teks(row['BRAND Barang'])
+  const pelanggan = teks(row['Nama Pelanggan'])
+  if (!brand && !pelanggan) return null
 
-  const tglStrA = String(row['Tgl Faktur'] ?? '').trim()
-  const dA      = parseTglFaktur(tglStrA)
-  const bulan   = dA ? (BULAN_INDONESIA[dA.getMonth() + 1] ?? '') : String(row['Bulan'] ?? '').toUpperCase().trim()
-  const tahun   = dA ? dA.getFullYear() : (parseInt(row['Tahun']) || 0)
+  const tglRaw = row['Tgl Faktur']
+  const tgl = parseTglFaktur(tglRaw)
+  const bulan = tgl ? BULAN_INDONESIA[tgl.getMonth() + 1] : teks(row['Bulan']).toUpperCase()
+  const tahun = tgl ? tgl.getFullYear() : (parseInt(row['Tahun'], 10) || 0)
 
-  const mappedDept = mapNamaDept(row)
-  const kota = mapCity(mappedDept)
+  const dept = mapNamaDept(row)
+  const kota = mapCity(dept)
+  const sku = teks(row['No. Barang'])
+  const nama = teks(row['Keterangan Barang'] ?? row['Nama Barang'])
+  const qty = angka(row['Kuantitas'] ?? row['Qty'])
+  const total = parseRupiah(row['Jumlah'])
 
   return {
-    'No. Faktur':            String(row['No. Faktur'] ?? '').trim(),
-    'Tgl Faktur':            tglStrA,
+    'No. Faktur':            teks(row['No. Faktur']),
+    'Tgl Faktur':            teks(tglRaw),
     'Bulan':                 bulan,
     'Tahun':                 tahun,
-    'Nama Pelanggan':        String(row['Nama Pelanggan'] ?? '').trim(),
-    'No. Barang':            String(row['No. Barang'] ?? '').trim(),
-    'SKU':                   String(row['No. Barang'] ?? '').trim(),
+    'Nama Pelanggan':        pelanggan,
+    'No. Barang':            sku,
+    'SKU':                   sku,
     'BRAND Barang':          brand,
     'Brand':                 brand,
-    'Kategori':              String(row['Nama Kategori Barang Barang'] ?? row['Kategori'] ?? '').trim(),
-    'Nama Barang':           String(row['Keterangan Barang'] ?? row['Nama Barang'] ?? '').trim(),
-    'Nama Item':             String(row['Keterangan Barang'] ?? row['Nama Barang'] ?? '').trim(),
-    'Qty':                   parseFloat(String(row['Kuantitas'] ?? row['Qty'] ?? '0').replace(',', '.')) || 0,
-    'Quantity':              parseFloat(String(row['Kuantitas'] ?? row['Qty'] ?? '0').replace(',', '.')) || 0,
-    'Jumlah':                parseRupiah(row['Jumlah']),
-    'Total':                 parseRupiah(row['Jumlah']),
-    'Sales':                 String(row['Sales'] ?? '').trim(),
-    'Dept.':                 mappedDept,
-    'Nama Dept.':            mappedDept,
-    'Lokasi Toko Pelanggan': String(row['Lokasi Toko Pelanggan'] ?? '').trim(),
+    'Kategori':              teks(row['Nama Kategori Barang Barang'] ?? row['Kategori']),
+    'Nama Barang':           nama,
+    'Nama Item':             nama,
+    'Qty':                   qty,
+    'Quantity':              qty,
+    'Jumlah':                total,
+    'Total':                 total,
+    'Sales':                 teks(row['Sales']),
+    'Dept.':                 dept,
+    'Nama Dept.':            dept,
+    'Lokasi Toko Pelanggan': teks(row['Lokasi Toko Pelanggan']),
     'Kota':                  kota,
     'City':                  kota,
     'Kab/Kota':              kota,
@@ -188,156 +216,116 @@ function normalizeSoHistorisA(row) {
     'Alamat':                '',
     'Kec':                   '',
     'Provinsi':              '',
+    'Periode':               bulan && tahun ? `${bulan} ${tahun}` : '',
   }
 }
 
 function detectFormat(rows) {
   if (!rows.length) return 'NEW'
-  const keys = Object.keys(rows[0])
-  const has = k => keys.some(x => x.trim() === k)
-  if (has('SKU') || has('Total') || has('Quantity') || has('Brand')) return 'NEW'
-  return 'OLD'
+  const keys = Object.keys(rows[0]).map(k => k.trim())
+  const punya = k => keys.includes(k)
+  return (punya('SKU') || punya('Total') || punya('Quantity') || punya('Brand')) ? 'NEW' : 'OLD'
 }
 
 export async function readSoHistoris(files) {
-  const fileList = (files instanceof File) ? [files] : Array.from(files)
-  const allRows  = []
+  const daftar = (files instanceof File) ? [files] : Array.from(files)
+  const semua = []
 
-  for (const file of fileList) {
-    let rows
-    if (file.name.toLowerCase().endsWith('.csv')) {
-      rows = await readCsvAsRows(file)
-    } else {
-      const buffer = await readFileAsBuffer(file)
-      rows = parseExcelOrCsv(buffer, file.name)
-    }
-    const fmt      = detectFormat(rows)
-    const normFn   = fmt === 'NEW' ? normalizeSoFormatBaru : normalizeSoHistorisA
-    
+  for (const file of daftar) {
+    const rows = await bacaBaris(file)
+    const normalize = detectFormat(rows) === 'NEW' ? normalizeSoFormatBaru : normalizeSoHistoris
+
     for (let i = 0; i < rows.length; i++) {
-      const r = normFn(rows[i])
-      if (r) allRows.push(r)
-      if (i % 10000 === 0) await new Promise(res => setTimeout(res, 0))
+      const hasil = normalize(rows[i])
+      if (hasil) semua.push(hasil)
+      // Beri napas ke UI thread setiap 10.000 baris
+      if (i > 0 && i % 10000 === 0) await new Promise(r => setTimeout(r, 0))
     }
   }
 
   const seen = new Set()
   const result = []
-  for (const r of allRows) {
-    const key = `${r['No. Faktur']}|${r['SKU']}|${r['Bulan']}|${r['Tahun']}|${r['Nama Pelanggan']}|${r['Total']}`
+  for (const r of semua) {
+    const key = [r['No. Faktur'], r['SKU'], r['Bulan'], r['Tahun'], r['Nama Pelanggan'], r['Total']].join('|')
     if (!seen.has(key)) { seen.add(key); result.push(r) }
   }
   return result
 }
 
 export async function readTarget(file) {
-  const buffer = await readFileAsBuffer(file)
-  const rows   = parseExcelOrCsv(buffer, file.name)
+  const rows = await bacaBaris(file)
   return rows.map(r => {
-    const keys      = Object.keys(r)
-    const brandKey  = keys.find(k => k.toLowerCase() === 'brand') ?? 'brand'
-    const targetKey = keys.find(k => k.toLowerCase() === 'target') ?? 'Target'
+    const keys = Object.keys(r)
+    const brandKey = keys.find(k => k.trim().toLowerCase() === 'brand')
+    const targetKey = keys.find(k => k.trim().toLowerCase() === 'target')
     return {
-      brand:  String(r[brandKey] ?? '').trim(),
-      target: parseRupiah(r[targetKey]),
+      brand: teks(brandKey ? r[brandKey] : ''),
+      target: parseRupiah(targetKey ? r[targetKey] : 0),
     }
   }).filter(r => r.brand && r.target > 0)
 }
 
-// ─── DISTRIBUTOR DATA ────────────────────────────────────────────────────────
+// ── Data distributor ────────────────────────────────────────────────────────
+
+const samakan = s => String(s ?? '').toLowerCase().replace(/[\s./]/g, '')
 
 /**
- * Baca file data distributor (Excel/CSV)
- * Format: Customer No. | Customer Name | Addres | Alamat Google | Provinsi | Kota/Kabupaten | Kecamatan
- * Returns array of normalized distributor objects
+ * Baca file data distributor.
+ * Kolom: Customer No. | Customer Name | Addres | Alamat Google | Provinsi |
+ *        Kota/Kabupaten | Kecamatan
  */
 export async function readDistributorFile(file) {
-  let rows = []
-  if (file.name.toLowerCase().endsWith('.csv')) {
-    rows = await readCsvAsRows(file)
-  } else {
-    const buffer = await readFileAsBuffer(file)
-    rows = parseExcelOrCsv(buffer, file.name)
-  }
+  const rows = await bacaBaris(file)
 
   return rows.map(r => {
     const keys = Object.keys(r)
-
-    // Flexible column name matching
-    const find = (...candidates) => {
-      for (const c of candidates) {
-        const k = keys.find(k => k.toLowerCase().replace(/[\s./]/g, '') === c.toLowerCase().replace(/[\s./]/g, ''))
-        if (k !== undefined) return String(r[k] ?? '').trim()
+    const find = (...kandidat) => {
+      for (const c of kandidat) {
+        const k = keys.find(k => samakan(k) === samakan(c))
+        if (k !== undefined) return teks(r[k])
       }
       return ''
     }
 
-    const customerNo   = find('CustomerNo.', 'CustomerNo', 'No', 'ID')
-    const customerName = find('CustomerName', 'Nama', 'Name')
-    const address      = find('Addres', 'Address', 'Alamat', 'Alamatlengkap')
-    const alamatGoogle = find('AlamatGoogle', 'Google', 'AlamatGoogleMaps')
-    const provinsi     = find('Provinsi', 'Province')
-    const kotaKab      = find('Kota/Kabupaten', 'KotaKabupaten', 'Kota', 'Kabupaten', 'KabKota')
-    const kecamatan    = find('Kecamatan', 'Kec', 'District')
-
+    const customerName = find('Customer Name', 'Nama', 'Name')
     if (!customerName) return null
 
     return {
-      customerNo,
+      customerNo:        find('Customer No.', 'Customer No', 'No', 'ID'),
       customerName,
       customerNameUpper: customerName.toUpperCase(),
-      address,
-      alamatGoogle,
-      provinsi,
-      kotaKab,
-      kecamatan,
+      address:           find('Addres', 'Address', 'Alamat', 'Alamat lengkap'),
+      alamatGoogle:      find('Alamat Google', 'Google', 'Alamat Google Maps'),
+      provinsi:          find('Provinsi', 'Province'),
+      kotaKab:           find('Kota/Kabupaten', 'Kota Kabupaten', 'Kota', 'Kabupaten', 'Kab/Kota'),
+      kecamatan:         find('Kecamatan', 'Kec', 'District'),
     }
   }).filter(Boolean)
 }
 
-/**
- * Bangun lookup map dari data distributor
- * Key: nama pelanggan (uppercase, normalized)
- * Value: { alamat, kec, kotaKab, provinsi }
- */
+const normalizeNameKey = nama => String(nama ?? '').toUpperCase().replace(/\s+/g, ' ').trim()
+
 export function buildDistributorMap(distributorData) {
   const map = new Map()
   for (const d of distributorData) {
     const key = normalizeNameKey(d.customerName)
-    if (key) {
-      map.set(key, {
-        alamat:   d.address || d.alamatGoogle || '',
-        kec:      d.kecamatan || '',
-        kotaKab:  d.kotaKab || '',
-        provinsi: d.provinsi || '',
-      })
-    }
+    if (!key) continue
+    map.set(key, {
+      alamat:   d.address || d.alamatGoogle || '',
+      kec:      d.kecamatan || '',
+      kotaKab:  d.kotaKab || '',
+      provinsi: d.provinsi || '',
+    })
   }
   return map
 }
 
-function normalizeNameKey(name) {
-  return String(name ?? '')
-    .toUpperCase()
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-/**
- * Apply mapping distributor ke data SO
- * Untuk setiap baris SO, cari Nama Pelanggan di distributor map
- * Jika ketemu, isi kolom lokasi dari data distributor
- * Returns array SO yang sudah di-enrich dengan data lokasi
- */
+/** Isi kolom lokasi di data SO dari data distributor, dicocokkan per nama pelanggan. */
 export function applyDistributorMapping(soRows, distributorMap) {
   let mapped = 0
-  const result = soRows.map(row => {
-    const pelanggan = normalizeNameKey(row['Nama Pelanggan'] || '')
-    if (!pelanggan) return row
-
-    const loc = distributorMap.get(pelanggan)
+  const rows = soRows.map(row => {
+    const loc = distributorMap.get(normalizeNameKey(row['Nama Pelanggan']))
     if (!loc) return row
-
     mapped++
     return {
       ...row,
@@ -349,8 +337,7 @@ export function applyDistributorMapping(soRows, distributorMap) {
       'Provinsi': loc.provinsi,
     }
   })
-
-  return { rows: result, mappedCount: mapped, totalCount: soRows.length }
+  return { rows, mappedCount: mapped, totalCount: soRows.length }
 }
 
 export function exportToExcel(data, fileName = 'export.xlsx') {
